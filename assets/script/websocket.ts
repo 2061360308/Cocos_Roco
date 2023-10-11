@@ -1,4 +1,4 @@
-import { _decorator, Component, Node } from 'cc';
+import { _decorator, Component, Node, director } from 'cc';
 const { ccclass, property } = _decorator;
 
 export class websocket extends Component {
@@ -10,8 +10,13 @@ export class websocket extends Component {
     //延迟等待定时器
     private _delayWaitTime: number;
 
-    public onMessage: Function = null;
-    public caller: object = null;
+    // 参数信号监听
+    private signal: any = {
+        // 信号名: [回调函数, 回调函数所在对象]
+        // "getRoomInfo": [this.onMessage, this]
+        "onopen": [],
+    };
+    
     /**
      * 创建心跳定时器
      */
@@ -36,19 +41,24 @@ export class websocket extends Component {
     /**
      * socket
      */
-    public connectWebSocket(callfunc?: Function) {
+    public connectWebSocket() {
         if (!this._ws) {
             this._ws = new WebSocket("ws://service-gs5xkif6-1303709080.gz.apigw.tencentcs.com:80/release/websocket");
 
             let self = this;
             this._ws.onopen = function (event) {
                 console.log("send text WS was opened");
+                
+                self.signal["onopen"].forEach((element: any) => {
+                    try{
+                        element[0](element[1]);
+                    }catch (error) {
+                        console.log(error);
+                    }
+                });
+
                 //开始心跳检测
                 self.resetHeartBeatTimer();
-                if (callfunc) {
-                    callfunc();
-                }
-
             }
             //消息到达就回调
             this._ws.onmessage = function (event) {
@@ -57,7 +67,28 @@ export class websocket extends Component {
                     console.debug("心跳测试通过!")
                     return;
                 }
-                self.onMessage(self.caller, event.data);
+
+                console.log("response text msg: " + event.data);
+                let dataObj: object | null = null;
+
+                try{
+                    dataObj = JSON.parse(event.data);
+                } catch (error) {
+                    console.log(error, event.data);
+                    return;
+                }
+
+                console.log("dataObj", dataObj);
+
+                self.signal[dataObj.title].forEach((element: any) => {
+                    try{
+                        element[0](element[1], dataObj.result);
+                    }catch (error) {
+                        console.log(error);
+                    }
+                });
+                
+                console.log("response text msg: " + dataObj);
             }
             this._ws.onerror = function (event) {
                 console.log("Send Text fired an error");
@@ -83,10 +114,29 @@ export class websocket extends Component {
      * socketSend
      */
     
-    public socketSend(data: string) {
+    public socketSend(caller: any, title: string, data: any = null, callfunc: Function | null = null) {
+
+        let sendData = {}
+        if (data === null) {
+            sendData["title"] = title
+        }else{
+            sendData["title"] = title
+            sendData["data"] = data
+        }
+        let sendDataStr = JSON.stringify(sendData);
+
+        // 绑定信号回调
+
+        let callfuncList = []
+        if (callfunc !== null) {
+            callfuncList.push([callfunc, caller])
+        }
+
+        this.signal[title] = callfuncList
+
         if (this._ws.readyState == WebSocket.OPEN) {
-            this._ws.send(data)
-            console.log("send text msg: " + data);
+            this._ws.send(sendDataStr)
+            console.log("send text msg: " + JSON.stringify(sendData));
         }
         else {
             console.log("WebSocket instance wasn't ready...");
@@ -115,6 +165,22 @@ export class websocket extends Component {
                     }
                 }, 10000)
             }
+        }
+    }
+
+
+    public listionSignal(caller: any, title: string, callfunc: Function) {
+        if(this.signal[title] === undefined){
+            this.signal[title] = []
+        }
+        this.signal[title].push([callfunc, caller])
+    }
+
+    public safeRun(callfunc: Function, caller: any) {
+        if (this.isOpen()){
+            callfunc(caller)
+        }else{
+            this.listionSignal(caller, "onopen", callfunc)
         }
     }
 }
